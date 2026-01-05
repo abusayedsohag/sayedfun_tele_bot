@@ -1,5 +1,8 @@
 import requests
 import re
+import os
+import threading
+from http.server import BaseHTTPRequestHandler, HTTPServer
 from telegram import Update, ReplyKeyboardMarkup, KeyboardButton, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import (
     ApplicationBuilder,
@@ -21,6 +24,12 @@ SHEETDB_API = "https://sheetdb.io/api/v1/r5omk7x4ayrq1"
 MODERATOR, USERNAME, AMOUNT = range(3)
 
 # ================= HELPERS =================
+
+def run_dummy_server():
+    port = int(os.environ.get("PORT", 10000))
+    server = HTTPServer(("0.0.0.0", port), BaseHTTPRequestHandler)
+    server.serve_forever()
+
 def is_valid_username(username: str):
     return re.fullmatch(r"@?[a-zA-Z0-9_]{5,32}", username)
 
@@ -309,6 +318,8 @@ def main():
 
     app.add_handler(CommandHandler("start", start))
     app.add_handler(conv)
+
+    threading.Thread(target=run_dummy_server).start()
     
     # এখানে প্যাটার্নটি আপডেট করা হয়েছে (view_date যোগ করা হয়েছে)
     app.add_handler(
