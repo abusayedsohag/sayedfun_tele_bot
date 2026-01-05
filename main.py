@@ -1,9 +1,17 @@
 import requests
 import re
 import os
-import threading
-from http.server import BaseHTTPRequestHandler, HTTPServer
-from telegram import Update, ReplyKeyboardMarkup, KeyboardButton, InlineKeyboardButton, InlineKeyboardMarkup
+import asyncio
+from datetime import datetime
+from flask import Flask, request
+
+from telegram import (
+    Update,
+    ReplyKeyboardMarkup,
+    KeyboardButton,
+    InlineKeyboardButton,
+    InlineKeyboardMarkup,
+)
 from telegram.ext import (
     ApplicationBuilder,
     CommandHandler,
@@ -11,25 +19,21 @@ from telegram.ext import (
     ConversationHandler,
     ContextTypes,
     CallbackQueryHandler,
-    filters
+    filters,
 )
-from datetime import datetime
 
 # ================= CONFIG =================
 BOT_TOKEN = "8029965764:AAEaGDeVSzeo5Jiz8mckmCM5qflxKYYZ3OQ"
 ADMIN_ID = 7360649475
 SHEETDB_API = "https://sheetdb.io/api/v1/r5omk7x4ayrq1"
 
+PORT = int(os.environ.get("PORT", 10000))
+WEBHOOK_URL = "https://sayedfun-tele-bot.onrender.com"
+
 # Conversation states
 MODERATOR, USERNAME, AMOUNT = range(3)
 
 # ================= HELPERS =================
-
-def run_dummy_server():
-    port = int(os.environ.get("PORT", 10000))
-    server = HTTPServer(("0.0.0.0", port), BaseHTTPRequestHandler)
-    server.serve_forever()
-
 def is_valid_username(username: str):
     return re.fullmatch(r"@?[a-zA-Z0-9_]{5,32}", username)
 
@@ -45,17 +49,17 @@ def main_menu_keyboard():
     keyboard = [
         [KeyboardButton("🆕 New Send"), KeyboardButton("💰 Total Amount")],
         [KeyboardButton("📋 All Submit")],
-        [KeyboardButton("⏳ Pending List"), KeyboardButton("✅ Paid List")]
+        [KeyboardButton("⏳ Pending List"), KeyboardButton("✅ Paid List")],
     ]
-    return ReplyKeyboardMarkup(keyboard, resize_keyboard=True, one_time_keyboard=True)
+    return ReplyKeyboardMarkup(keyboard, resize_keyboard=True)
 
 def admin_buttons(submit_date, chat_id):
-    # callback_data তে chat_id পাস করা হচ্ছে যাতে পরে মেসেজ পাঠানো যায়
-    keyboard = [
-        [InlineKeyboardButton("✅ Accept", callback_data=f"accept:{submit_date}:{chat_id}"),
-         InlineKeyboardButton("❌ Cancel", callback_data=f"cancel:{submit_date}:{chat_id}")]
-    ]
-    return InlineKeyboardMarkup(keyboard)
+    return InlineKeyboardMarkup(
+        [[
+            InlineKeyboardButton("✅ Accept", callback_data=f"accept:{submit_date}:{chat_id}"),
+            InlineKeyboardButton("❌ Cancel", callback_data=f"cancel:{submit_date}:{chat_id}")
+        ]]
+    )
 
 # ================= HANDLERS =================
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -64,271 +68,127 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         reply_markup=main_menu_keyboard()
     )
 
-# ----------------- NEW SEND -----------------
 async def get_username(update: Update, context: ContextTypes.DEFAULT_TYPE):
     sender = update.message.text.strip()
     if sender.lower() == "self":
         my_username = update.message.from_user.username
         if not my_username:
-            await update.message.reply_text("❌ You don't have a Telegram username.\nPlease enter a valid @username.")
+            await update.message.reply_text("❌ You don't have a Telegram username.")
             return USERNAME
         context.user_data["sender"] = f"@{my_username}"
-        await update.message.reply_text(f"✅ Sender set as: @{my_username}\nNow enter amount:")
+        await update.message.reply_text("Now enter amount:")
         return AMOUNT
 
     if not is_valid_username(sender):
-        await update.message.reply_text("❌ Invalid username format. Example: @username123")
+        await update.message.reply_text("❌ Invalid username.")
         return USERNAME
 
-    if not sender.startswith("@"):
-        sender = "@" + sender
-    context.user_data["sender"] = sender
-    await update.message.reply_text(f"✅ Sender saved: {sender}\nNow enter amount:")
+    context.user_data["sender"] = sender if sender.startswith("@") else "@" + sender
+    await update.message.reply_text("Now enter amount:")
     return AMOUNT
 
 async def get_amount(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    amount_text = update.message.text.strip()
-    
-    
-    if not amount_text.isdigit():
-        await update.message.reply_text("❌ Amount must be a number. Please enter again:")
+    if not update.message.text.isdigit():
+        await update.message.reply_text("❌ Amount must be a number.")
         return AMOUNT
-    
-    mod = context.user_data.get("selected_mod")
-    amount = int(amount_text)
+
+    amount = int(update.message.text)
     sender = context.user_data["sender"]
+    mod = context.user_data.get("selected_mod")
     user_name = update.message.from_user.username or update.message.from_user.first_name
     chat_id = update.message.from_user.id
     date_id = datetime.now().strftime("%Y%m%d%H%M%S")
 
-    # ================= send to SheetDB =================
     data = {"data": [{
         "date": date_id,
-        "moderator": mod, 
-        "telegram_user": user_name, 
-        "chat_id": chat_id, 
-        "sender_username": sender, 
-        "amount": amount, 
-        "status": "pending"
+        "moderator": mod,
+        "telegram_user": user_name,
+        "chat_id": chat_id,
+        "sender_username": sender,
+        "amount": amount,
+        "status": "pending",
     }]}
-    
-    try:
-        requests.post(SHEETDB_API, json=data, timeout=10)
-    except Exception as e:
-        print(f"SheetDB Error: {e}")
 
-    # ================= send to admin =================
-    # admin_msg = (
-    #     f"📩 **New Submission**\n\n"
-    #     f"🛡 Moderator: {mod}\n"
-    #     f"👤 From: @{user_name}\n"
-    #     f"🔁 Sender: {sender}\n"
-    #     f"💰 Amount: {amount}\n"
-    #     f"🕒 Time: {datetime.now().strftime('%Y-%m-%d %H:%M')}\n\n"
-    #     f"`{sender} | {amount}`\n\n"
-    #     f"Status: ⏳ Pending"
-    # )
+    requests.post(SHEETDB_API, json=data, timeout=10)
 
     admin_msg = (
         f"📩 <b>New Submission</b>\n\n"
-        f"👤 <b>From:</b> @{user_name}\n"
-        f"🛡 <b>Moderator:</b> {mod}\n"
-        f"🔁 <b>Sender:</b> {sender}\n"
-        f"💰 <b>Amount:</b> {amount}\n\n"
-        f"<code>{sender} | {amount}</code>"
-    )
-    
-    await context.bot.send_message(
-        chat_id=ADMIN_ID,
-        text=admin_msg,
-        reply_markup=admin_buttons(date_id, chat_id),
-        parse_mode="HTML"
+        f"👤 @{user_name}\n"
+        f"🛡 {mod}\n"
+        f"🔁 {sender}\n"
+        f"💰 {amount}"
     )
 
-    await update.message.reply_text(
-        "✅ Submitted! Wait for admin Approval.",
-        reply_markup=main_menu_keyboard()
+    await context.bot.send_message(
+        ADMIN_ID,
+        admin_msg,
+        reply_markup=admin_buttons(date_id, chat_id),
+        parse_mode="HTML",
     )
+
+    await update.message.reply_text("✅ Submitted!", reply_markup=main_menu_keyboard())
     return ConversationHandler.END
 
 async def select_moderator(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    query = update.callback_query
-    await query.answer()
-    mod_name = query.data.split(":")[1]
-    context.user_data["selected_mod"] = mod_name 
-    await query.edit_message_text(f"✅ Moderator: {mod_name}\n\nNow enter Sender Username (or type 'self'):")
+    q = update.callback_query
+    await q.answer()
+    context.user_data["selected_mod"] = q.data.split(":")[1]
+    await q.edit_message_text("Now enter Sender Username (or type 'self'):")
     return USERNAME
 
-# ----------------- ADMIN CALLBACK -----------------
 async def admin_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    query = update.callback_query
-    data = query.data
-    await query.answer()
+    q = update.callback_query
+    await q.answer()
 
-    # --- তারিখের বাটন ক্লিক করলে এই অংশটি কাজ করবে ---
-    if data.startswith("view_date:"):
-        selected_date = data.split(":")[1]
-        user_name = query.from_user.username or query.from_user.first_name
-        
-        try:
-            # SheetDB থেকে ডাটা নিয়ে আসা
-            res = requests.get(SHEETDB_API, timeout=10).json()
-            
-            # ওই ইউজার এবং ওই তারিখের ডাটা ফিল্টার
-            filtered_rows = [r for r in res if (r.get("telegram_user") == user_name) and (r.get("date", "").startswith(selected_date))]
-            
-            if not filtered_rows:
-                await query.edit_message_text(f"❌ No records found for this date.")
-                return
+    action, date_id, chat_id = q.data.split(":")
+    status = "accepted" if action == "accept" else "canceled"
 
-            pretty_date = f"{selected_date[:4]}-{selected_date[4:6]}-{selected_date[6:8]}"
-            msg = f"📋 **Report: {pretty_date}**\n━━━━━━━━━━━━━━\n"
-            
-            day_total = 0
-            for r in filtered_rows:
-                status = r.get('status', 'pending')
-                icon = "⏳" if status == "pending" else "✅" if status == "accepted" else "💰" if status == "paid" else "❌"
-                amount = r.get('amount', '0')
-                sender = r.get('sender_username', 'Unknown')
-                msg += f"{icon} {amount} | {sender}\n"
-                
-                if status == "accepted":
-                    day_total += int(amount)
-            
-            msg += f"━━━━━━━━━━━━━━\n💰 **Daily Total: {day_total}**"
-            
-            # বাটন সরিয়ে ডাটা দেখানো
-            await query.edit_message_text(msg, parse_mode="Markdown")
-            
-        except Exception as e:
-            print(f"Error: {e}")
-            await query.edit_message_text("❌ Data could not be loaded.")
-        return
+    requests.patch(
+        f"{SHEETDB_API}/date/{date_id}",
+        json={"data": [{"status": status}]},
+        timeout=10,
+    )
 
-    try:
-        action, submit_date, target_chat_id = query.data.split(":")
-    except:
-        await query.edit_message_text("❌ Error: Invalid callback data.")
-        return
+    await q.edit_message_text(f"Submission {status.upper()}")
+    await context.bot.send_message(chat_id, f"📢 Submission {status}")
 
-    new_status = "accepted" if action == "accept" else "canceled"
-    status_icon = "✅" if action == "accept" else "❌"
-
-    try:
-        # 1. Update SheetDB
-        patch_url = f"{SHEETDB_API}/date/{submit_date}"
-        payload = {"data": [{"status": new_status}]}
-        r = requests.patch(patch_url, json=payload, timeout=10)
-
-        if r.status_code in [200, 201]:
-            # 2. Update Admin Message
-            await query.edit_message_text(f"Submission {new_status.capitalize()} {status_icon}")
-
-            search_res = requests.get(f"{SHEETDB_API}/search?date={submit_date}", timeout=10).json()
-            sender_name = "N/A"
-            amount_val = "0"
-            
-            if search_res:
-                sender_name = search_res[0].get('sender_username', 'Unknown')
-                amount_val = search_res[0].get('amount', '0')
-            
-            # 3. Notify User (Using target_chat_id)
-            user_notif = (
-                f"📢 **Submission Update**\n\n"
-                f"{sender_name} - {amount_val} : {status_icon}\n\n"
-                f"Thank you!"
-            )
-            await context.bot.send_message(chat_id=target_chat_id, text=user_notif, parse_mode="Markdown")
-        else:
-            await query.edit_message_text(f"❌ DB Update Failed (Code: {r.status_code})")
-
-    except Exception as e:
-        await query.edit_message_text(f"❌ System Error: {str(e)}")
-
-# ----------------- MENU HANDLER -----------------
 async def menu_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    text = update.message.text.strip()
-    user_name = update.message.from_user.username or update.message.from_user.first_name
-
-    if text == "🆕 New Send":
-        await update.message.reply_text("📋 Select a Moderator:", reply_markup=moderator_keyboard())
+    if update.message.text == "🆕 New Send":
+        await update.message.reply_text("Select Moderator:", reply_markup=moderator_keyboard())
         return MODERATOR
-
-    elif text == "💰 Total Amount":
-        try:
-            res = requests.get(SHEETDB_API, timeout=10).json()
-            user_rows = [item for item in res if item.get("telegram_user") == user_name]
-            total = sum(int(item.get("amount", 0)) for item in user_rows if item.get("status") == "accepted")
-            await update.message.reply_text(f"💰 Your Approved Total: {total}", reply_markup=main_menu_keyboard())
-        except:
-            await update.message.reply_text("❌ Error fetching amount.")
-
-    elif text == "📋 All Submit":
-        try:
-            res = requests.get(SHEETDB_API, timeout=10).json()
-            user_rows = [item for item in res if item.get("telegram_user") == user_name]
-            
-            if not user_rows:
-                await update.message.reply_text("📋 No data found.")
-                return
-
-            # ইউনিক তারিখগুলো বের করা (Set ব্যবহার করে)
-            unique_dates = sorted(list(set(row.get("date", "")[:8] for row in user_rows)), reverse=True)
-
-            keyboard = []
-            # প্রতি লাইনে ২টা করে তারিখের বাটন তৈরি
-            for i in range(0, len(unique_dates[:10]), 2):
-                row_btns = []
-                for d in unique_dates[i:i+2]:
-                    # ফরম্যাট: YYYY-MM-DD
-                    pretty_date = f"{d[:4]}-{d[4:6]}-{d[6:8]}"
-                    row_btns.append(InlineKeyboardButton(pretty_date, callback_data=f"view_date:{d}"))
-                keyboard.append(row_btns)
-
-            reply_markup = InlineKeyboardMarkup(keyboard)
-            await update.message.reply_text("📅 Select date:", reply_markup=reply_markup)
-            
-        except Exception as e:
-            await update.message.reply_text("❌ Error fetching dates.")
-
-    else:
-        await update.message.reply_text("Please use the menu buttons.", reply_markup=main_menu_keyboard())
-    
     return ConversationHandler.END
 
-# ================= MAIN =================
-def main():
-    app = ApplicationBuilder().token(BOT_TOKEN).build()
+# ================= WEBHOOK SETUP =================
+flask_app = Flask(__name__)
+telegram_app = ApplicationBuilder().token(BOT_TOKEN).build()
 
-    conv = ConversationHandler(
-        entry_points=[
-            MessageHandler(
-                filters.Regex("^(🆕 New Send|💰 Total Amount|📋 All Submit)$"),
-                menu_handler
-            )
-        ],
+conv = ConversationHandler(
+    entry_points=[MessageHandler(filters.Regex("^(🆕 New Send|💰 Total Amount|📋 All Submit)$"), menu_handler)],
+    states={
+        MODERATOR: [CallbackQueryHandler(select_moderator, pattern="^set_mod:")],
+        USERNAME: [MessageHandler(filters.TEXT & ~filters.COMMAND, get_username)],
+        AMOUNT: [MessageHandler(filters.TEXT & ~filters.COMMAND, get_amount)],
+    },
+    fallbacks=[CommandHandler("start", start)],
+)
 
-        states={
-            MODERATOR: [CallbackQueryHandler(select_moderator, pattern="^set_mod:")],
-            USERNAME: [MessageHandler(filters.TEXT & ~filters.COMMAND, get_username)],
-            AMOUNT: [MessageHandler(filters.TEXT & ~filters.COMMAND, get_amount)],
-        },
-        fallbacks=[CommandHandler("start", start)],
-    )
+telegram_app.add_handler(CommandHandler("start", start))
+telegram_app.add_handler(conv)
+telegram_app.add_handler(CallbackQueryHandler(admin_callback, pattern="^(accept|cancel):"))
 
-    app.add_handler(CommandHandler("start", start))
-    app.add_handler(conv)
+@flask_app.route("/")
+def home():
+    return "Bot is alive", 200
 
-    threading.Thread(target=run_dummy_server).start()
-    
-    # এখানে প্যাটার্নটি আপডেট করা হয়েছে (view_date যোগ করা হয়েছে)
-    app.add_handler(
-        CallbackQueryHandler(admin_callback, pattern="^(accept|cancel|view_date):")
-    )
+@flask_app.route("/webhook", methods=["POST"])
+def webhook():
+    update = Update.de_json(request.json, telegram_app.bot)
+    asyncio.run(telegram_app.process_update(update))
+    return "OK", 200
 
-    
-    print("Bot is running...")
-    app.run_polling()
+async def set_webhook():
+    await telegram_app.bot.set_webhook(f"{WEBHOOK_URL}/webhook")
 
 if __name__ == "__main__":
-    main()
+    asyncio.run(set_webhook())
+    flask_app.run(host="0.0.0.0", port=PORT)
