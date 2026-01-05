@@ -292,21 +292,29 @@ def main():
     app = ApplicationBuilder().token(BOT_TOKEN).build()
 
     conv = ConversationHandler(
-        entry_points=[MessageHandler(filters.TEXT & ~filters.COMMAND, menu_handler)],
+        entry_points=[
+            MessageHandler(
+                filters.Regex("^(🆕 New Send|💰 Total Amount|📋 All Submit)$"),
+                menu_handler
+            )
+        ],
+
         states={
             MODERATOR: [CallbackQueryHandler(select_moderator, pattern="^set_mod:")],
             USERNAME: [MessageHandler(filters.TEXT & ~filters.COMMAND, get_username)],
             AMOUNT: [MessageHandler(filters.TEXT & ~filters.COMMAND, get_amount)],
         },
         fallbacks=[CommandHandler("start", start)],
-        per_message=True,
     )
 
     app.add_handler(CommandHandler("start", start))
     app.add_handler(conv)
     
     # এখানে প্যাটার্নটি আপডেট করা হয়েছে (view_date যোগ করা হয়েছে)
-    app.add_handler(CallbackQueryHandler(admin_callback, pattern="^(accept|cancel|view_date|set_mod):"))
+    app.add_handler(
+        CallbackQueryHandler(admin_callback, pattern="^(accept|cancel|view_date):")
+    )
+
     
     print("Bot is running...")
     app.run_polling()
