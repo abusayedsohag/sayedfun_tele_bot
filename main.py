@@ -34,7 +34,7 @@ def is_valid_username(username: str):
     return re.fullmatch(r"@?[a-zA-Z0-9_]{5,32}", username)
 
 def moderator_keyboard():
-    mods = ["Millat", "Shifat", "Mahin"] 
+    mods = ["Millat", "Shifat", "Mahin", "Nirob"]
     keyboard = []
     for i in range(0, len(mods), 2):
         row = [InlineKeyboardButton(m, callback_data=f"set_mod:{m}") for m in mods[i:i+2]]
